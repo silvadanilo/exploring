@@ -6,7 +6,9 @@ extern crate tokio_core;
 extern crate tokio_line;
 
 use futures::{Async, AsyncSink, StartSend, Poll, Stream, Sink, IntoFuture, Future, future};
+use futures::future::{Loop};
 use futures::task::{self, Task};
+use futures::stream::{SplitSink};
 use tokio_core::reactor::{Core, Timeout, Handle};
 // use futures::sync::mpsc::{SendError};
 // use futures::Async::{NotReady, Ready};
@@ -50,7 +52,10 @@ impl Future for Sample {
         println!("Starting poll");
 
         self.rx.poll()
-            .map_err(|err| io::Error::new(ErrorKind::Other, err))
+            .map_err(|err| {
+                println!("errore on oneshot::rx::poll()");
+                io::Error::new(ErrorKind::Other, err)
+            })
 
         // match self.rx.poll().expect("non puo fallire") {
         //     Async::NotReady => {
@@ -118,29 +123,110 @@ fn main() {
     // });
     // handle.spawn(ft.map_err(|_| ()));
 
+    let handle_cloned = handle.clone();
+    // let client = future::loop_fn((), move |_| -> Loop<SplitSink<tokio_core::io::Framed<TcpStream, LineCodec>>, ()> {
+    let client = future::loop_fn((), move |_| {
+        let sender = get_sender(&handle_cloned)
+            .and_then(|sender| -> Result<Loop<SplitSink<tokio_core::io::Framed<TcpStream, LineCodec>>, ()>, io::Error>{
+                return Ok(Loop::Break(sender));
+            })
+            .or_else(|e| -> Result<Loop<SplitSink<tokio_core::io::Framed<TcpStream, LineCodec>>, ()>, io::Error>{
+                println!("continue in or else");
+                thread::sleep(time::Duration::from_millis(100));
+                return Ok(Loop::Continue(()));
+            });
 
+        sender
 
-    let addr = "127.0.0.1:9876".parse().unwrap();
-    let tcp = TcpStream::connect(&addr, &handle);
-    let client = tcp.and_then(|stream| {
-        let (sink, mut stream) = stream.framed(LineCodec).split();
-        let write_stdout = stream.poll().and_then(move |message| {
-            // println!("{}", message);
-            tx.complete(55);
-            Ok(())
-        });
-
-        write_stdout
-
-        // write_stdout.map(|_| ())
-        //     .then(|_| Ok(()))
+        // Run the get_connection function and loop again regardless of its result
+        // get_connection(&handle_cloned)
+        //     .map(|_| -> Loop<(), ()> {
+        //         println!("continue in map");
+        //         Loop::Continue(())
+        //     })
+        //     .or_else(|e| -> Result<Loop<(), ()>, ()> {
+        //         println!("continue in err");
+        //         thread::sleep(time::Duration::from_millis(500));
+        //         Ok(Loop::Continue(()))
+        //     })
     });
 
+
+    // let addr = "127.0.0.1:9876".parse().unwrap();
+    // let tcp = TcpStream::connect(&addr, &handle);
+    // let client = tcp.and_then(|stream| {
+    //     let (sink, mut stream) = stream.framed(LineCodec).split();
+    //     let write_stdout = stream.poll().and_then(move |message| {
+    //         // println!("{}", message);
+    //         tx.complete(55);
+    //         Ok(())
+    //     });
+
+    //     write_stdout
+
+    //     // write_stdout.map(|_| ())
+    //     //     .then(|_| Ok(()))
+    // });
+    let (buftx, bufrx) = mpsc::unbounded();
+    let handle2 = handle.clone();
     let client = client
-        .map(|_| ())
+        .map(move |sender| {
+            println!("client map");
+            // let x = sender
+            //     .send("prova".to_string())
+            //     .map(|_| ())
+            //     .map_err(|_| ());
+
+            let x = bufrx
+                .fold(sender, |sender, message| {
+                    sender.send(message).map_err(|_| ())
+                })
+                .map(|_| {
+                    println!("184");
+                    ()
+                })
+                .map_err(|_| {
+                    println!("188");
+                    ()
+                });
+
+            handle2.spawn(x);
+            ()
+        })
         .map_err(|_| ());
+        // .map_err(|e| { println!("{}", e); () });
 
     handle.spawn(client);
+
+    let buftxcloned = buftx.clone();
+    let handle2 = handle.clone();
+    let t = Timeout::new(Duration::new(3, 0), &handle).into_future().flatten();
+    let ft = t.and_then(move |_| {
+        println!("Timed out");
+        let a = buftxcloned
+            .send("Messagio 1".to_string())
+            .map(|_| ())
+            .map_err(|_| ())
+        ;
+        handle2.spawn(a);
+        Ok(())
+    });
+    handle.spawn(ft.map_err(|_| ()));
+
+    let buftxcloned = buftx.clone();
+    let handle2 = handle.clone();
+    let t = Timeout::new(Duration::new(5, 0), &handle).into_future().flatten();
+    let ft = t.and_then(move |_| {
+        println!("Timed out");
+        let a = buftxcloned
+            .send("Messagio 2".to_string())
+            .map(|_| ())
+            .map_err(|_| ())
+        ;
+        handle2.spawn(a);
+        Ok(())
+    });
+    handle.spawn(ft.map_err(|_| ()));
 
 
     let af = f.and_then(|x| {
@@ -148,8 +234,9 @@ fn main() {
         Ok(x)
     });
 
-    let x = eventloop.run(af).unwrap();
-    println!("{:?}", x);
+    // let x = eventloop.run(af).unwrap();
+    eventloop.run(af);
+    // println!("{:?}", x);
 
     //******************************************
 
@@ -210,4 +297,44 @@ fn main() {
 
     // let x = eventloop.run(af).unwrap();
     // println!("{:?}", x);
+}
+
+fn get_connection(handle: &Handle) -> Box<Future<Item = (), Error = io::Error>> {
+    let remote_addr = "127.0.0.1:9876".parse().unwrap();
+    let tcp = TcpStream::connect(&remote_addr, handle);
+
+    let client = tcp.and_then(move |stream| {
+        let (_, receiver) = stream.framed(LineCodec).split();
+        let reader = receiver.for_each(|message| {
+            println!("{}", message);
+            Ok(())
+        });
+
+        reader.and_then(|_| {
+            println!("CLIENT DISCONNECTED");
+            Ok(())
+        })
+    });
+
+    // let client = client
+    //     .or_else(|_| {
+    //         println!("connection refuse");
+    //         thread::sleep(time::Duration::from_millis(100));
+    //         Ok(())
+    //         // Err(io::Error::new(io::ErrorKind::Other, "connection refuse"))
+    //     });
+
+    Box::new(client)
+}
+
+fn get_sender(handle: &Handle) -> Box<Future<Item = SplitSink<tokio_core::io::Framed<TcpStream, LineCodec>>, Error = io::Error>> {
+    let remote_addr = "127.0.0.1:9876".parse().unwrap();
+    let tcp = TcpStream::connect(&remote_addr, handle);
+
+    let client = tcp.and_then(move |stream| {
+        let (sender, receiver) = stream.framed(LineCodec).split();
+        Ok(sender)
+    });
+
+    Box::new(client)
 }
