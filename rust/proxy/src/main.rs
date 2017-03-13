@@ -18,43 +18,49 @@ use std::cell::RefCell;
 
 struct RemoteConnections {
     connections: HashMap<String, UnboundedSender<String>>,
+    buftx: UnboundedSender<String>,
     handle: Handle,
 }
 
 impl RemoteConnections {
-    fn new(handle: Handle) -> Self {
+    fn new(buftx: UnboundedSender<String>, handle: Handle) -> Self {
         RemoteConnections {
             connections: HashMap::<String, UnboundedSender<String>>::new(),
+            buftx: buftx,
             handle: handle,
         }
     }
 
     fn add(&mut self, tx: UnboundedSender<String>) {
-        self.connections.insert("prova".to_string(), tx);
+        self.connections.insert("conn".to_string(), tx);
+    }
+
+    fn remove(&mut self) {
+        self.connections.remove(&"conn".to_string());
     }
 
     // fn send(&self, message: String) -> Box<Future<Item = (), Error = ()>> {
     fn send(&self, message: String) -> Box<Result<(), ()>> {
-        // let f = for (_key, tx) in self.connections.borrow_mut().iter_mut() {
-        //     let f = tx.send(message.clone())
-        //         .map(|_| ())
-        //         .map_err(|_| ());
-
-        //     f
-        //     // self.handle.spawn(f);
-        // };
-
-        let tx = self.connections.get("prova").unwrap();
-        let f = tx.send(message.clone())
-            .map(|_| ())
-            .map_err(|_| ());
+        let f = match self.connections.get("conn") {
+            Some(tx) => {
+                tx.send(message.clone())
+                    .map(|_| ())
+                    .map_err(|_| ())
+            },
+            None => {
+                //TODO:! message should not be lost
+                let buftx_cloned = self.buftx.clone();
+                let sent = buftx_cloned.send(message);
+                self.handle.spawn(sent
+                    .map(|_| ())
+                    .map_err(|_| ())
+                );
+                println!("CONNECTION NOT FOUND");
+                Err(())
+            }
+        };
 
         return Box::new(f);
-    }
-
-    fn new_connection(&self) -> UnboundedReceiver<String> {
-        let (remote_tmp_tx, remote_tmp_rx) = mpsc::unbounded::<String>();
-        remote_tmp_rx
     }
 }
 
@@ -69,11 +75,11 @@ fn send_data_to_remote_server<'a>(handle: &Handle, connections: Rc<RefCell<Remot
 
         let (sender, receiver) = stream.framed(LineCodec).split();
         let reader = receiver
-            .for_each(|message| {
-                println!("{}", message);
+            .for_each(|_message| {
+                // println!("{}", message);
                 Ok(())
             })
-            .and_then(|bufrx| {
+            .and_then(|_| {
                 println!("CLIENT DISCONNECTED");
                 Ok(())
             });
@@ -83,7 +89,7 @@ fn send_data_to_remote_server<'a>(handle: &Handle, connections: Rc<RefCell<Remot
         let writer = remote_tmp_rx
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "error kind returned should be the same of `sender` sink in `forward()`"))
             .forward(sender)
-            .and_then(|(rx, tx)| Ok(()))
+            .and_then(|(_rx, _tx)| Ok(()))
         ;
 
         // let writer = bufrx
@@ -94,11 +100,15 @@ fn send_data_to_remote_server<'a>(handle: &Handle, connections: Rc<RefCell<Remot
         //     });
 
         reader.select(writer)
-            .map(|(bufrx, nf)| {
-                ()
+            .map(|(res, _nf)| {
+                res
             })
-            .map_err(|(err, nf)| {
+            .map_err(|(err, _nf)| {
                 err
+            })
+            .and_then(move |_| {
+                connections.borrow_mut().remove();
+                Ok(())
             })
 
         // let (_, bufrx) = mpsc::unbounded();
@@ -115,10 +125,10 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    let connections = Rc::new(RefCell::new(RemoteConnections::new(handle.clone())));
-
     let (buftx, bufrx) = mpsc::unbounded();
     simulated_messaging_receiving_from_clients(buftx.clone(), &handle.clone());
+
+    let connections = Rc::new(RefCell::new(RemoteConnections::new(buftx.clone(), handle.clone())));
 
     let connections_inner = connections.clone();
     let f = bufrx.for_each(move |message| {
@@ -132,7 +142,7 @@ fn main() {
             .map(|_| -> Loop<(), ()> {
                 Loop::Continue(())
             })
-            .or_else(|err| -> Result<Loop<(), ()>, ()> {
+            .or_else(|_| -> Result<Loop<(), ()>, ()> {
                 thread::sleep(time::Duration::from_millis(50));
                 Ok(Loop::Continue(()))
             })
