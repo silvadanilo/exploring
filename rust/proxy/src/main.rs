@@ -36,31 +36,41 @@ impl RemoteConnections {
     }
 
     fn remove(&mut self) {
-        self.connections.remove(&"conn".to_string());
+        self.connections = HashMap::new();
+        // self.connections.remove(&"conn".to_string());
     }
 
     // fn send(&self, message: String) -> Box<Future<Item = (), Error = ()>> {
     fn send(&self, message: String) -> Box<Result<(), ()>> {
         let f = match self.connections.get("conn") {
             Some(tx) => {
-                tx.send(message.clone())
+                tx.send(message) //UnboundedSender::send() returns a Result<(), SendError<T>>
                     .map(|_| ())
-                    .map_err(|_| ())
+                    .map_err(|error| {
+                        //self.remove(); //FIXME:! how to call remove?!?
+                        self.push_back(error.into_inner());
+                        ()
+                    })
             },
             None => {
                 //TODO:! message should not be lost
-                let buftx_cloned = self.buftx.clone();
-                let sent = buftx_cloned.send(message);
-                self.handle.spawn(sent
-                    .map(|_| ())
-                    .map_err(|_| ())
-                );
+                self.push_back(message);
+
                 println!("CONNECTION NOT FOUND");
                 Err(())
             }
         };
 
         return Box::new(f);
+    }
+
+    fn push_back(&self, message: String) {
+        let buftx_cloned = self.buftx.clone();
+        let sent = buftx_cloned.send(message);
+        self.handle.spawn(sent
+            .map(|_| ())
+            .map_err(|_| ())
+        );
     }
 }
 
@@ -84,20 +94,11 @@ fn send_data_to_remote_server<'a>(handle: &Handle, connections: Rc<RefCell<Remot
                 Ok(())
             });
 
-        // reader
-
         let writer = remote_tmp_rx
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "error kind returned should be the same of `sender` sink in `forward()`"))
             .forward(sender)
             .and_then(|(_rx, _tx)| Ok(()))
         ;
-
-        // let writer = bufrx
-        //     .map_err(|_| io::Error::new(io::ErrorKind::Other, "error kind returned should be the same of `sender` sink in `forward()`"))
-        //     .forward(sender)
-        //     .and_then(|(bufrx, sender)| {
-        //         Ok(())
-        //     });
 
         reader.select(writer)
             .map(|(res, _nf)| {
