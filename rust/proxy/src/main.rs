@@ -3,7 +3,7 @@ extern crate tokio_core;
 extern crate tokio_line;
 
 use futures::future::{self, Future, Loop, IntoFuture};
-use futures::{Stream, Sink};
+use futures::{Async, AsyncSink, Poll, StartSend, Stream, Sink};
 use futures::sync::mpsc::{self, UnboundedSender, UnboundedReceiver};
 use tokio_core::io::{Io};
 use tokio_core::net::{TcpStream};
@@ -16,18 +16,20 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-struct RemoteConnections {
+struct Buffer {
     connections: HashMap<String, UnboundedSender<String>>,
     buftx: UnboundedSender<String>,
     handle: Handle,
+    // buffer: Vec<String>,
 }
 
-impl RemoteConnections {
+impl Buffer {
     fn new(buftx: UnboundedSender<String>, handle: Handle) -> Self {
-        RemoteConnections {
+        Buffer {
             connections: HashMap::<String, UnboundedSender<String>>::new(),
             buftx: buftx,
             handle: handle,
+            // buffer: vec![],
         }
     }
 
@@ -74,14 +76,30 @@ impl RemoteConnections {
     }
 }
 
+// impl Sink for Buffer {
+//     type SinkItem = String;
+//     type SinkError = ();
 
-fn send_data_to_remote_server<'a>(handle: &Handle, connections: Rc<RefCell<RemoteConnections>>) -> Box<Future<Item = (), Error = io::Error>> {
+//     fn start_send(&mut self, msg: String) -> StartSend<String, ()> {
+//         println!("start send");
+//         self.buffer.push(msg);
+//         Ok(AsyncSink::Ready)
+//     }
+
+//     fn poll_complete(&mut self) -> Poll<(), ()> {
+//         println!("poll complete");
+//         Ok(Async::Ready(()))
+//     }
+// }
+
+
+fn send_data_to_remote_server<'a>(handle: &Handle, buffer: Rc<RefCell<Buffer>>) -> Box<Future<Item = (), Error = io::Error>> {
     let remote_addr = "127.0.0.1:9876".parse().unwrap();
     let tcp = TcpStream::connect(&remote_addr, handle);
 
     let client = tcp.and_then(move |stream| {
         let (remote_tmp_tx, remote_tmp_rx) = mpsc::unbounded::<String>();
-        connections.borrow_mut().add(remote_tmp_tx);
+        buffer.borrow_mut().add(remote_tmp_tx);
 
         let (sender, receiver) = stream.framed(LineCodec).split();
         let reader = receiver
@@ -108,7 +126,7 @@ fn send_data_to_remote_server<'a>(handle: &Handle, connections: Rc<RefCell<Remot
                 err
             })
             .and_then(move |_| {
-                connections.borrow_mut().remove();
+                buffer.borrow_mut().remove();
                 Ok(())
             })
 
@@ -127,19 +145,23 @@ fn main() {
     let handle = core.handle();
 
     let (buftx, bufrx) = mpsc::unbounded();
+    let buffer = Rc::new(RefCell::new(Buffer::new(
+        buftx.clone(),
+        handle.clone()
+    )));
+
     simulated_messaging_receiving_from_clients(buftx.clone(), &handle.clone());
 
-    let connections = Rc::new(RefCell::new(RemoteConnections::new(buftx.clone(), handle.clone())));
-
-    let connections_inner = connections.clone();
+    let buffer_inner = buffer.clone();
     let f = bufrx.for_each(move |message| {
-        connections_inner.borrow().send(message.clone());
+        buffer_inner.borrow().send(message.clone());
         Ok(())
     }).map_err(|_| ());
+
     handle.spawn(f);
 
     let client = future::loop_fn((), |_| {
-        send_data_to_remote_server(&handle, connections.clone())
+        send_data_to_remote_server(&handle, buffer.clone())
             .map(|_| -> Loop<(), ()> {
                 Loop::Continue(())
             })
