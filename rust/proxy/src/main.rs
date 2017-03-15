@@ -12,12 +12,11 @@ use tokio_line::LineCodec;
 use std::{io, str};
 use std::{thread, time};
 use std::time::Duration;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 
 struct Buffer {
-    connections: HashMap<String, UnboundedSender<String>>,
+    connection: Option<UnboundedSender<String>>,
     buftx: UnboundedSender<String>,
     handle: Handle,
     // buffer: Vec<String>,
@@ -26,7 +25,7 @@ struct Buffer {
 impl Buffer {
     fn new(buftx: UnboundedSender<String>, handle: Handle) -> Self {
         Buffer {
-            connections: HashMap::<String, UnboundedSender<String>>::new(),
+            connection: None,
             buftx: buftx,
             handle: handle,
             // buffer: vec![],
@@ -34,18 +33,17 @@ impl Buffer {
     }
 
     fn add(&mut self, tx: UnboundedSender<String>) {
-        self.connections.insert("conn".to_string(), tx);
+        self.connection = Some(tx);
     }
 
     fn remove(&mut self) {
-        self.connections = HashMap::new();
-        // self.connections.remove(&"conn".to_string());
+        self.connection = None;
     }
 
     // fn send(&self, message: String) -> Box<Future<Item = (), Error = ()>> {
     fn send(&self, message: String) -> Box<Result<(), ()>> {
-        let f = match self.connections.get("conn") {
-            Some(tx) => {
+        let f = match self.connection {
+            Some(ref tx) => {
                 tx.send(message) //UnboundedSender::send() returns a Result<(), SendError<T>>
                     .map(|_| ())
                     .map_err(|error| {
