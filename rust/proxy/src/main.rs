@@ -53,7 +53,7 @@ impl Buffer {
                     })
             },
             None => {
-                //TODO:! message should not be lost
+                //TODO:! message should not be lost but should not push back as is here
                 self.push_back(message);
 
                 println!("CONNECTION NOT FOUND");
