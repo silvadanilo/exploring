@@ -20,11 +20,14 @@ use std::{thread, time};
 use std::time::Duration;
 use std::string::String;
 use std::fmt;
+use std::mem;
 
 enum RemoteConnectionState {
     NotConnected,
     Connecting(TcpStreamNew),
     Connected(UnboundedSender<String>),
+    // Connected(SplitSink<Framed<TcpStream, LineCodec>>),
+    // Sending,
 }
 
 impl fmt::Display for RemoteConnectionState {
@@ -39,6 +42,9 @@ impl fmt::Display for RemoteConnectionState {
             RemoteConnectionState::Connected(_) => {
                 write!(f, "Connected")
             }
+            // RemoteConnectionState::Sending => {
+            //     write!(f, "Sending")
+            // }
         }
     }
 }
@@ -47,14 +53,18 @@ struct StubbornSink {
     remote_addr: std::net::SocketAddr,
     status: RemoteConnectionState,
     handle: Handle,
+    stream: Option<SplitSink<Framed<TcpStream, LineCodec>>>,
+    // sending: Option<sink::Send<SplitSink<Framed<TcpStream, LineCodec>>>>,
 }
 
 impl StubbornSink {
     fn new(handle: Handle) -> Self {
         StubbornSink {
-            remote_addr: "127.0.0.1:5550".parse().unwrap(),
+            remote_addr: "127.0.0.1:9876".parse().unwrap(),
             status: RemoteConnectionState::NotConnected,
             handle: handle,
+            stream: None,
+            // sending: None,
         }
     }
 
@@ -72,7 +82,50 @@ impl Sink for StubbornSink {
 
         loop {
             let next_status = match self.status {
+                // RemoteConnectionState::Sending => {
+                //     if let Some(ref mut sending_future) = self.sending {
+                //         match sending_future.poll() {
+                //             Err(_) => {
+                //                 debug!("Error in sending msg `{}`", msg.clone());
+                //                 Some(RemoteConnectionState::NotConnected)
+                //             },
+                //             Ok(Async::NotReady) => {
+                //                 return Ok(AsyncSink::NotReady(msg));
+                //             },
+                //             Ok(Async::Ready(split_sink)) => {
+                //                 // self.stream = Some(split_sink);
+                //                 self.status = RemoteConnectionState::Connected(split_sink);
+                //                 return Ok(AsyncSink::Ready);
+                //             }
+                //         }
+                //     } else {
+                //         error!("Should never happen");
+                //         Some(RemoteConnectionState::NotConnected)
+                //     }
+                // },
                 RemoteConnectionState::Connected(ref split_sink) => {
+                    // self.sending = Some(split_sink.send(msg.clone()));
+                    // Some(RemoteConnectionState::Sending)
+
+                    // if let Some(sender) = self.stream.take() {
+                    //     // let (sender, receiver) = stream.framed(LineCodec).split();
+                    //     self.sending = Some(sender.send(msg.clone()));
+                    //     Some(RemoteConnectionState::Sending)
+                    //     // self.stream = Some(stream);
+                    // } else{
+                    //     Some(RemoteConnectionState::NotConnected)
+                    // }
+
+
+                    // if let Some(stream) = self.stream {
+                    // if stream {
+                        // let (sender, receiver) = stream.framed(LineCodec).split();
+                        // let sending_future = sender.send(msg.clone());
+                        // Some(RemoteConnectionState::Sending(sending_future))
+                    // } else {
+                    //     Some(RemoteConnectionState::NotConnected)
+                    // }
+
                     match split_sink.send(msg.clone()) {
                         Ok(_) => {
                             return Ok(AsyncSink::Ready);
@@ -93,16 +146,22 @@ impl Sink for StubbornSink {
                             return Ok(AsyncSink::NotReady(msg));
                         }
                         Ok(Async::Ready(stream)) => {
+                            println!("1");
                             let (remote_tmp_tx, remote_tmp_rx) = mpsc::unbounded::<String>();
                             let (sender, receiver) = stream.framed(LineCodec).split();
 
+                            // // self.stream = Some(sender);
+                            // Some(RemoteConnectionState::Connected(sender))
+
+
+
                             let reader = receiver
                                 .for_each(|message| {
-                                    println!("received: {}", message);
+                                    // println!("{}", message);
                                     Ok(())
                                 })
                                 .and_then(|_| {
-                                    info!("Connection with remote server is lost");
+                                    println!("CLIENT DISCONNECTED");
                                     Ok(())
                                 });
 
@@ -128,6 +187,7 @@ impl Sink for StubbornSink {
 
                             self.handle.spawn(f);
 
+                            println!("2");
                             Some(RemoteConnectionState::Connected(remote_tmp_tx))
                         }
                     }
@@ -177,8 +237,7 @@ fn simulated_messaging_receiving_from_clients(buftx: UnboundedSender<String>,
         debug!("Interval");
         i = i + 1;
         buftx.clone()
-            // .send(format!("Messagio {}", i).to_string())
-            .send(format!(r#"{{"@timestamp":"2017-03-24T09:16:42.636040+01:00","@source":"dev-all-onebiptrusty cli","@fields":{{"channel":"integrationtest-client","level":100,"extra_level_name":"DEBUG","extra_uname":"dev-all-onebiptrusty","extra_sapi":"cli","extra_process_id":17954}},"@message":"Message {}"}}"#, i).to_string())
+            .send(format!("Messagio {}", i).to_string())
             .map(|_| ())
             .map_err(|_| TimerError::NoCapacity)
     });

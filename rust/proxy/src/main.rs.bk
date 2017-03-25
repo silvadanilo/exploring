@@ -1,0 +1,192 @@
+extern crate futures;
+extern crate tokio_core;
+extern crate tokio_line;
+extern crate tokio_timer;
+
+use futures::future::{Future};
+use futures::{Async, AsyncSink, Poll, StartSend, Stream, Sink};
+// use futures::stream::{SplitSink};
+use futures::sync::mpsc::{self, UnboundedSender};
+use tokio_timer::*;
+use tokio_core::io::{Io};
+use tokio_core::net::{TcpStream, TcpStreamNew};
+use tokio_core::reactor::{Core, Handle};
+use tokio_line::LineCodec;
+use std::{io, str};
+use std::{thread, time};
+use std::time::Duration;
+use std::string::String;
+
+enum RemoteConnectionState {
+    NotConnected,
+    Connecting(TcpStreamNew),
+    // Connected(UnboundedSender<String>)
+    Connected(SplitSink<String>)
+    // Connected(TcpStream)
+}
+
+struct StubbornSink {
+    remote_addr: std::net::SocketAddr,
+    status: RemoteConnectionState,
+    handle: Handle,
+}
+
+impl StubbornSink {
+    fn new(handle: Handle) -> Self {
+        StubbornSink {
+            remote_addr: "127.0.0.1:9876".parse().unwrap(),
+            status: RemoteConnectionState::NotConnected,
+            handle: handle,
+        }
+    }
+
+    fn show_current_status(&self) {
+        match self.status {
+            RemoteConnectionState::NotConnected => {
+                println!("NotConnected");
+            }
+            RemoteConnectionState::Connecting(_) => {
+                println!("Connecting");
+            }
+            RemoteConnectionState::Connected(_) => {
+                println!("Connected");
+            }
+        }
+    }
+
+    fn try_to_connect(&mut self) -> TcpStreamNew {
+        TcpStream::connect(&self.remote_addr, &self.handle.clone())
+    }
+}
+
+impl Sink for StubbornSink {
+    type SinkItem = String;
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, msg: String) -> StartSend<String, io::Error> {
+        // self.show_currrent_status();
+
+        loop {
+            let next_status = match self.status {
+                RemoteConnectionState::Connected(ref tx) => {
+                    match tx.send(msg.clone()) {
+                        Ok(_) => {
+                            return Ok(AsyncSink::Ready);
+                        }
+                        Err(_) => {
+                            Some(RemoteConnectionState::NotConnected)
+                        }
+                    }
+                },
+                RemoteConnectionState::NotConnected => {
+                    Some(RemoteConnectionState::Connecting(self.try_to_connect()))
+                },
+                RemoteConnectionState::Connecting(ref mut future) => {
+                    match future.poll() {
+                        Err(_) => {
+                            thread::sleep(time::Duration::from_millis(50));
+                            Some(RemoteConnectionState::NotConnected)
+                        },
+                        Ok(Async::NotReady) => {
+                            return Ok(AsyncSink::NotReady(msg));
+                        },
+                        Ok(Async::Ready(stream)) => {
+                            let (remote_tmp_tx, remote_tmp_rx) = mpsc::unbounded::<String>();
+                            let (sender, receiver) = stream.framed(LineCodec).split();
+
+                            Some(RemoteConnectionState::Connected(sender))
+
+//                             let reader = receiver
+//                                 .for_each(|message| {
+//                                     // println!("{}", message);
+//                                     Ok(())
+//                                 })
+//                                 .and_then(|_| {
+//                                     // println!("CLIENT DISCONNECTED");
+//                                     Ok(())
+//                                 });
+
+//                             let writer = remote_tmp_rx
+//                                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "error kind returned should be the same of `sender` sink in `forward()`"))
+//                                 .forward(sender)
+//                                 .and_then(|(_rx, _tx)| Ok(()))
+//                             ;
+
+
+//                             let f = reader.select(writer)
+//                                 .map(|(res, _nf)| {
+//                                     res
+//                                 })
+//                                 .map_err(|(err, _nf)| {
+//                                     // err
+//                                     ()
+//                                 })
+//                                 .and_then(move |_| {
+//                                     // buffer.borrow_mut().remove();
+//                                     Ok(())
+//                                 });
+
+//                             self.handle.spawn(f);
+
+//                             Some(RemoteConnectionState::Connected(remote_tmp_tx))
+                        }
+                    }
+                }
+            };
+
+            match next_status {
+                Some(s) => self.status = s,
+                None => {}
+            }
+        }
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        println!("my poll_complete");
+        Ok(Async::Ready(()))
+    }
+}
+
+fn main() {
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+
+    let (buftx, bufrx) = mpsc::unbounded();
+
+    simulated_messaging_receiving_from_clients(buftx.clone(), &handle.clone());
+
+    let stubborn_sink = StubbornSink::new(handle.clone());
+    let f = bufrx
+        .fold(stubborn_sink, |stubborn_sink, message| {
+            stubborn_sink.send(message).map_err(|_| ())
+        });
+
+    core.run(f).unwrap();
+}
+
+fn simulated_messaging_receiving_from_clients(buftx: UnboundedSender<String>, handle: &Handle) -> () {
+
+    let handle_cloned = handle.clone();
+    let timer = Timer::default();
+    let wakeups = timer.interval(Duration::new(0, 150000000));
+    let mut i = 0;
+    let background_tasks = wakeups.for_each(move |_| {
+        println!("Interval");
+        i = i + 1;
+        let f = buftx.clone()
+            .send(format!("Messagio {}", i).to_string())
+            .map(|_| ())
+            .map_err(|_| ());
+
+        handle_cloned.spawn(f);
+
+        Ok(())
+    });
+
+    // let background_tasks = buftx.clone()
+    //     .send(format!("Messagio {}", i).to_string())
+    //     .map(|_| ())
+    //     .map_err(|_| ());
+
+    handle.spawn(background_tasks.map(|_| ()).map_err(|_|()));
+}
