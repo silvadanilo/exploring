@@ -7,11 +7,11 @@ extern crate tokio_line;
 extern crate tokio_timer;
 
 use futures::future::Future;
-use futures::{Async, AsyncSink, Poll, StartSend, Stream, Sink, sink};
-use futures::stream::{SplitSink};
+use futures::{Async, AsyncSink, Poll, StartSend, Stream, Sink};
+// use futures::stream::{SplitSink};
 use futures::sync::mpsc::{self, UnboundedSender};
 use tokio_timer::*;
-use tokio_core::io::{Io, Framed};
+use tokio_core::io::{Io};
 use tokio_core::net::{TcpStream, TcpStreamNew};
 use tokio_core::reactor::{Core, Handle};
 use tokio_line::LineCodec;
@@ -58,8 +58,45 @@ impl StubbornSink {
         }
     }
 
-    fn try_to_connect(&mut self) -> TcpStreamNew {
+    fn connection_attempt(&mut self) -> TcpStreamNew {
         TcpStream::connect(&self.remote_addr, &self.handle.clone())
+    }
+
+    // I have failed to pass &self here, because the `match` `Connecting` branch locks self. Try again!
+    fn get_inner_sink(stream: TcpStream, handle: &Handle) -> UnboundedSender<String> {
+        let (middleware_tx, middleware_rx) = mpsc::unbounded::<String>();
+
+        let (sender, receiver) = stream.framed(LineCodec).split();
+
+        let reader = receiver
+            .for_each(|_message| {
+                Ok(())
+            })
+            .and_then(|_| {
+                info!("Connection with remote server is lost");
+                Ok(())
+            });
+
+        let writer = middleware_rx
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "error kind returned should be the same of `sender` sink in `forward()`"))
+            .forward(sender)
+            .and_then(|(_rx, _tx)| Ok(()))
+        ;
+
+        let f = reader.select(writer)
+            .map(|(res, _nf)| {
+                res
+            })
+            .map_err(|(_err, _nf)| {
+                ()
+            })
+            .and_then(move |_| {
+                Ok(())
+            });
+
+        handle.spawn(f);
+
+        middleware_tx
     }
 }
 
@@ -74,63 +111,27 @@ impl Sink for StubbornSink {
             let next_status = match self.status {
                 RemoteConnectionState::Connected(ref split_sink) => {
                     match split_sink.send(msg.clone()) {
-                        Ok(_) => {
-                            return Ok(AsyncSink::Ready);
-                        }
+                        Ok(_) => return Ok(AsyncSink::Ready),
                         Err(_) => Some(RemoteConnectionState::NotConnected),
                     }
-                }
-                RemoteConnectionState::NotConnected => {
-                    Some(RemoteConnectionState::Connecting(self.try_to_connect()))
                 }
                 RemoteConnectionState::Connecting(ref mut future) => {
                     match future.poll() {
                         Err(_) => {
-                            thread::sleep(time::Duration::from_millis(50));
+                            thread::sleep(time::Duration::from_millis(50)); //TODO:! make millis configurable
                             Some(RemoteConnectionState::NotConnected)
                         }
                         Ok(Async::NotReady) => {
                             return Ok(AsyncSink::NotReady(msg));
                         }
                         Ok(Async::Ready(stream)) => {
-                            let (remote_tmp_tx, remote_tmp_rx) = mpsc::unbounded::<String>();
-                            let (sender, receiver) = stream.framed(LineCodec).split();
-
-                            let reader = receiver
-                                .for_each(|message| {
-                                    println!("received: {}", message);
-                                    Ok(())
-                                })
-                                .and_then(|_| {
-                                    info!("Connection with remote server is lost");
-                                    Ok(())
-                                });
-
-                            let writer = remote_tmp_rx
-                                .map_err(|_| io::Error::new(io::ErrorKind::Other, "error kind returned should be the same of `sender` sink in `forward()`"))
-                                .forward(sender)
-                                .and_then(|(_rx, _tx)| Ok(()))
-                            ;
-
-
-                            let f = reader.select(writer)
-                                .map(|(res, _nf)| {
-                                    res
-                                })
-                                .map_err(|(err, _nf)| {
-                                    // err
-                                    ()
-                                })
-                                .and_then(move |_| {
-                                    // buffer.borrow_mut().remove();
-                                    Ok(())
-                                });
-
-                            self.handle.spawn(f);
-
-                            Some(RemoteConnectionState::Connected(remote_tmp_tx))
+                            let middleware_tx = StubbornSink::get_inner_sink(stream, &self.handle);
+                            Some(RemoteConnectionState::Connected(middleware_tx))
                         }
                     }
+                }
+                RemoteConnectionState::NotConnected => {
+                    Some(RemoteConnectionState::Connecting(self.connection_attempt()))
                 }
             };
 
@@ -169,7 +170,6 @@ fn simulated_messaging_receiving_from_clients(buftx: UnboundedSender<String>,
                                               handle: &Handle)
                                               -> () {
 
-    let handle_cloned = handle.clone();
     let timer = Timer::default();
     let wakeups = timer.interval(Duration::new(0, 150000000));
     let mut i = 0;
@@ -190,4 +190,3 @@ fn simulated_messaging_receiving_from_clients(buftx: UnboundedSender<String>,
 
     handle.spawn(background_tasks.map(|_| ()).map_err(|_| ()));
 }
-
