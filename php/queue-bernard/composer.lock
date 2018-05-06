@@ -1,0 +1,71 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#composer-lock-the-lock-file",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "3f30a96b3386274e72cd50714f6a52b1",
+    "packages": [
+        {
+            "name": "bernard/bernard",
+            "version": "v0.12.4",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/bernardphp/bernard.git",
+                "reference": "c452caa6de208b0274449cde1c48eb32fb9f59f9"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/bernardphp/bernard/zipball/c452caa6de208b0274449cde1c48eb32fb9f59f9",
+                "reference": "c452caa6de208b0274449cde1c48eb32fb9f59f9",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=5.3.3"
+            },
+            "replace": {
+                "henrikbjorn/bernard": "self.version"
+            },
+            "require-dev": {
+                "aws/aws-sdk-php": "~2.4",
+                "doctrine/dbal": "~2.3",
+                "iron-io/iron_mq": "~1.4",
+                "jms/serializer": "~0.12",
+                "pimple/pimple": "~1.0",
+                "predis/predis": "~0.8",
+                "psr/log": "~1.0",
+                "symfony/console": "~2.0",
+                "symfony/dependency-injection": "~2.0",
+                "symfony/serializer": "~2.2"
+            },
+            "type": "library",
+            "extra": {
+                "branch-alias": {
+                    "dev-master": "0.10.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-0": {
+                    "Bernard": "src/"
+                },
+                "files": [
+                    "src/Bernard/functions.php"
+                ]
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "description": "Message queue implemented in PHP with Redis as a backend.",
+            "time": "2017-11-05T18:32:45+00:00"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": [],
+    "platform-dev": []
+}
