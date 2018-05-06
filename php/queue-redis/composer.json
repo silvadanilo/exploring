@@ -1,0 +1,6 @@
+{
+    "require": {
+        "enqueue/redis": "^0.8.23",
+        "enqueue/enqueue": "^0.8.25"
+    }
+}
